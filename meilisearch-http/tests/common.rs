@@ -1,42 +1,67 @@
 #![allow(dead_code)]
 
+use actix_web::{http::StatusCode, test};
 use serde_json::{json, Value};
 use std::time::Duration;
-
-use actix_web::{http::StatusCode, test};
-use meilisearch_http::data::Data;
-use meilisearch_http::option::Opt;
-use meilisearch_core::DatabaseOptions;
 use tempdir::TempDir;
 use tokio::time::delay_for;
 
-pub struct Server {
-    uid: String,
-    data: Data,
+use meilisearch_core::DatabaseOptions;
+use meilisearch_http::data::Data;
+use meilisearch_http::helpers::NormalizePath;
+use meilisearch_http::option::Opt;
+
+/// Performs a search test on both post and get routes
+#[macro_export]
+macro_rules! test_post_get_search {
+    ($server:expr, $query:expr, |$response:ident, $status_code:ident | $block:expr) => {
+        let post_query: meilisearch_http::routes::search::SearchQueryPost =
+            serde_json::from_str(&$query.clone().to_string()).unwrap();
+        let get_query: meilisearch_http::routes::search::SearchQuery = post_query.into();
+        let get_query = ::serde_url_params::to_string(&get_query).unwrap();
+        let ($response, $status_code) = $server.search_get(&get_query).await;
+        let _ = ::std::panic::catch_unwind(|| $block).map_err(|e| {
+            panic!(
+                "panic in get route: {:?}",
+                e.downcast_ref::<&str>().unwrap()
+            )
+        });
+        let ($response, $status_code) = $server.search_post($query).await;
+        let _ = ::std::panic::catch_unwind(|| $block).map_err(|e| {
+            panic!(
+                "panic in post route: {:?}",
+                e.downcast_ref::<&str>().unwrap()
+            )
+        });
+    };
 }
 
-const DB_OPTS: DatabaseOptions = DatabaseOptions {
-    main_map_size: 100 * 1024 * 1024 * 1024,
-    update_map_size: 100 * 1024 * 1024 * 1024,
-};
+pub struct Server {
+    pub uid: String,
+    pub data: Data,
+}
 
 impl Server {
     pub fn with_uid(uid: &str) -> Server {
         let tmp_dir = TempDir::new("meilisearch").unwrap();
 
-        let default_db_options = DB_OPTS;
+        let default_db_options = DatabaseOptions::default();
 
         let opt = Opt {
-            db_path: tmp_dir.path().to_str().unwrap().to_string(),
+            db_path: tmp_dir.path().join("db").to_str().unwrap().to_string(),
+            dumps_dir: tmp_dir.path().join("dump"),
+            dump_batch_size: 16,
             http_addr: "127.0.0.1:7700".to_owned(),
             master_key: None,
             env: "development".to_owned(),
             no_analytics: true,
-            main_map_size: default_db_options.main_map_size,
-            update_map_size: default_db_options.update_map_size
+            max_mdb_size: default_db_options.main_map_size,
+            max_udb_size: default_db_options.update_map_size,
+            http_payload_size_limit: 10000000,
+            ..Opt::default()
         };
 
-        let data = Data::new(opt.clone());
+        let data = Data::new(opt.clone()).unwrap();
 
         Server {
             uid: uid.to_string(),
@@ -44,18 +69,89 @@ impl Server {
         }
     }
 
+    pub async fn test_server() -> Self {
+        let mut server = Self::with_uid("test");
+
+        let body = json!({
+            "uid": "test",
+            "primaryKey": "id",
+        });
+
+        server.create_index(body).await;
+
+        let body = json!({
+            "rankingRules": [
+                "typo",
+                "words",
+                "proximity",
+                "attribute",
+                "wordsPosition",
+                "exactness",
+            ],
+            "searchableAttributes": [
+                "balance",
+                "picture",
+                "age",
+                "color",
+                "name",
+                "gender",
+                "email",
+                "phone",
+                "address",
+                "about",
+                "registered",
+                "latitude",
+                "longitude",
+                "tags",
+            ],
+            "displayedAttributes": [
+                "id",
+                "isActive",
+                "balance",
+                "picture",
+                "age",
+                "color",
+                "name",
+                "gender",
+                "email",
+                "phone",
+                "address",
+                "about",
+                "registered",
+                "latitude",
+                "longitude",
+                "tags",
+            ],
+        });
+
+        server.update_all_settings(body).await;
+
+        let dataset = include_bytes!("assets/test_set.json");
+
+        let body: Value = serde_json::from_slice(dataset).unwrap();
+
+        server.add_or_replace_multiple_documents(body).await;
+        server
+    }
+
+    pub fn data(&self) -> &Data {
+        &self.data
+    }
+
     pub async fn wait_update_id(&mut self, update_id: u64) {
-        loop {
+        // try 10 times to get status, or panic to not wait forever
+        for _ in 0..10 {
             let (response, status_code) = self.get_update_status(update_id).await;
             assert_eq!(status_code, 200);
 
-            if response["status"] == "processed" || response["status"] == "error" {
-                eprintln!("{:#?}", response);
+            if response["status"] == "processed" || response["status"] == "failed" {
+                // eprintln!("{:#?}", response);
                 return;
             }
 
             delay_for(Duration::from_secs(1)).await;
         }
+        panic!("Timeout waiting for update id");
     }
 
     // Global Http request GET/POST/DELETE async or sync
@@ -63,7 +159,8 @@ impl Server {
     pub async fn get_request(&mut self, url: &str) -> (Value, StatusCode) {
         eprintln!("get_request: {}", url);
 
-        let mut app = test::init_service(meilisearch_http::create_app(&self.data)).await;
+        let mut app =
+            test::init_service(meilisearch_http::create_app(&self.data).wrap(NormalizePath)).await;
 
         let req = test::TestRequest::get().uri(url).to_request();
         let res = test::call_service(&mut app, req).await;
@@ -74,10 +171,11 @@ impl Server {
         (response, status_code)
     }
 
-    pub async fn post_request(&mut self, url: &str, body: Value) -> (Value, StatusCode) {
+    pub async fn post_request(&self, url: &str, body: Value) -> (Value, StatusCode) {
         eprintln!("post_request: {}", url);
 
-        let mut app = test::init_service(meilisearch_http::create_app(&self.data)).await;
+        let mut app =
+            test::init_service(meilisearch_http::create_app(&self.data).wrap(NormalizePath)).await;
 
         let req = test::TestRequest::post()
             .uri(url)
@@ -95,7 +193,7 @@ impl Server {
         eprintln!("post_request_async: {}", url);
 
         let (response, status_code) = self.post_request(url, body).await;
-        assert_eq!(status_code, 202);
+        eprintln!("response: {}", response);
         assert!(response["updateId"].as_u64().is_some());
         self.wait_update_id(response["updateId"].as_u64().unwrap())
             .await;
@@ -105,7 +203,8 @@ impl Server {
     pub async fn put_request(&mut self, url: &str, body: Value) -> (Value, StatusCode) {
         eprintln!("put_request: {}", url);
 
-        let mut app = test::init_service(meilisearch_http::create_app(&self.data)).await;
+        let mut app =
+            test::init_service(meilisearch_http::create_app(&self.data).wrap(NormalizePath)).await;
 
         let req = test::TestRequest::put()
             .uri(url)
@@ -133,7 +232,8 @@ impl Server {
     pub async fn delete_request(&mut self, url: &str) -> (Value, StatusCode) {
         eprintln!("delete_request: {}", url);
 
-        let mut app = test::init_service(meilisearch_http::create_app(&self.data)).await;
+        let mut app =
+            test::init_service(meilisearch_http::create_app(&self.data).wrap(NormalizePath)).await;
 
         let req = test::TestRequest::delete().uri(url).to_request();
         let res = test::call_service(&mut app, req).await;
@@ -185,9 +285,14 @@ impl Server {
         self.delete_request(&url).await
     }
 
-    pub async fn search(&mut self, query: &str) -> (Value, StatusCode) {
+    pub async fn search_get(&mut self, query: &str) -> (Value, StatusCode) {
         let url = format!("/indexes/{}/search?{}", self.uid, query);
         self.get_request(&url).await
+    }
+
+    pub async fn search_post(&mut self, body: Value) -> (Value, StatusCode) {
+        let url = format!("/indexes/{}/search", self.uid);
+        self.post_request(&url, body).await
     }
 
     pub async fn get_all_updates_status(&mut self) -> (Value, StatusCode) {
@@ -246,9 +351,9 @@ impl Server {
         self.delete_request_async(&url).await
     }
 
-    pub async fn delete_multiple_documents(&mut self, body: Value) {
+    pub async fn delete_multiple_documents(&mut self, body: Value) -> (Value, StatusCode) {
         let url = format!("/indexes/{}/documents/delete-batch", self.uid);
-        self.post_request_async(&url, body).await;
+        self.post_request_async(&url, body).await
     }
 
     pub async fn get_all_settings(&mut self) -> (Value, StatusCode) {
@@ -259,6 +364,11 @@ impl Server {
     pub async fn update_all_settings(&mut self, body: Value) {
         let url = format!("/indexes/{}/settings", self.uid);
         self.post_request_async(&url, body).await;
+    }
+
+    pub async fn update_all_settings_sync(&mut self, body: Value) -> (Value, StatusCode) {
+        let url = format!("/indexes/{}/settings", self.uid);
+        self.post_request(&url, body).await
     }
 
     pub async fn delete_all_settings(&mut self) -> (Value, StatusCode) {
@@ -296,6 +406,11 @@ impl Server {
         self.post_request_async(&url, body).await;
     }
 
+    pub async fn update_distinct_attribute_sync(&mut self, body: Value) -> (Value, StatusCode) {
+        let url = format!("/indexes/{}/settings/distinct-attribute", self.uid);
+        self.post_request(&url, body).await
+    }
+
     pub async fn delete_distinct_attribute(&mut self) -> (Value, StatusCode) {
         let url = format!("/indexes/{}/settings/distinct-attribute", self.uid);
         self.delete_request_async(&url).await
@@ -316,6 +431,11 @@ impl Server {
         self.post_request_async(&url, body).await;
     }
 
+    pub async fn update_searchable_attributes_sync(&mut self, body: Value) -> (Value, StatusCode) {
+        let url = format!("/indexes/{}/settings/searchable-attributes", self.uid);
+        self.post_request(&url, body).await
+    }
+
     pub async fn delete_searchable_attributes(&mut self) -> (Value, StatusCode) {
         let url = format!("/indexes/{}/settings/searchable-attributes", self.uid);
         self.delete_request_async(&url).await
@@ -331,19 +451,37 @@ impl Server {
         self.post_request_async(&url, body).await;
     }
 
+    pub async fn update_displayed_attributes_sync(&mut self, body: Value) -> (Value, StatusCode) {
+        let url = format!("/indexes/{}/settings/displayed-attributes", self.uid);
+        self.post_request(&url, body).await
+    }
+
     pub async fn delete_displayed_attributes(&mut self) -> (Value, StatusCode) {
         let url = format!("/indexes/{}/settings/displayed-attributes", self.uid);
         self.delete_request_async(&url).await
     }
 
-    pub async fn get_accept_new_fields(&mut self) -> (Value, StatusCode) {
-        let url = format!("/indexes/{}/settings/accept-new-fields", self.uid);
+    pub async fn get_attributes_for_faceting(&mut self) -> (Value, StatusCode) {
+        let url = format!("/indexes/{}/settings/attributes-for-faceting", self.uid);
         self.get_request(&url).await
     }
 
-    pub async fn update_accept_new_fields(&mut self, body: Value) {
-        let url = format!("/indexes/{}/settings/accept-new-fields", self.uid);
+    pub async fn update_attributes_for_faceting(&mut self, body: Value) {
+        let url = format!("/indexes/{}/settings/attributes-for-faceting", self.uid);
         self.post_request_async(&url, body).await;
+    }
+
+    pub async fn update_attributes_for_faceting_sync(
+        &mut self,
+        body: Value,
+    ) -> (Value, StatusCode) {
+        let url = format!("/indexes/{}/settings/attributes-for-faceting", self.uid);
+        self.post_request(&url, body).await
+    }
+
+    pub async fn delete_attributes_for_faceting(&mut self) -> (Value, StatusCode) {
+        let url = format!("/indexes/{}/settings/attributes-for-faceting", self.uid);
+        self.delete_request_async(&url).await
     }
 
     pub async fn get_synonyms(&mut self) -> (Value, StatusCode) {
@@ -354,6 +492,11 @@ impl Server {
     pub async fn update_synonyms(&mut self, body: Value) {
         let url = format!("/indexes/{}/settings/synonyms", self.uid);
         self.post_request_async(&url, body).await;
+    }
+
+    pub async fn update_synonyms_sync(&mut self, body: Value) -> (Value, StatusCode) {
+        let url = format!("/indexes/{}/settings/synonyms", self.uid);
+        self.post_request(&url, body).await
     }
 
     pub async fn delete_synonyms(&mut self) -> (Value, StatusCode) {
@@ -369,6 +512,11 @@ impl Server {
     pub async fn update_stop_words(&mut self, body: Value) {
         let url = format!("/indexes/{}/settings/stop-words", self.uid);
         self.post_request_async(&url, body).await;
+    }
+
+    pub async fn update_stop_words_sync(&mut self, body: Value) -> (Value, StatusCode) {
+        let url = format!("/indexes/{}/settings/stop-words", self.uid);
+        self.post_request(&url, body).await
     }
 
     pub async fn delete_stop_words(&mut self) -> (Value, StatusCode) {
@@ -405,58 +553,17 @@ impl Server {
         self.get_request("/sys-info/pretty").await
     }
 
-    // Populate routes
+    pub async fn trigger_dump(&self) -> (Value, StatusCode) {
+        self.post_request("/dumps", Value::Null).await
+    }
 
-    pub async fn populate_movies(&mut self) {
-        let body = json!({
-            "uid": "movies",
-            "primaryKey": "id",
-        });
-        self.create_index(body).await;
+    pub async fn get_dump_status(&mut self, dump_uid: &str) -> (Value, StatusCode) {
+        let url = format!("/dumps/{}/status", dump_uid);
+        self.get_request(&url).await
+    }
 
-        let body = json!({
-            "rankingRules": [
-                "typo",
-                "words",
-                "proximity",
-                "attribute",
-                "wordsPosition",
-                "desc(popularity)",
-                "exactness",
-                "desc(vote_average)",
-            ],
-            "searchableAttributes": [
-                "title",
-                "tagline",
-                "overview",
-                "cast",
-                "director",
-                "producer",
-                "production_companies",
-                "genres",
-            ],
-            "displayedAttributes": [
-                "title",
-                "director",
-                "producer",
-                "tagline",
-                "genres",
-                "id",
-                "overview",
-                "vote_count",
-                "vote_average",
-                "poster_path",
-                "popularity",
-            ],
-            "acceptNewFields": false,
-        });
-
-        self.update_all_settings(body).await;
-
-        let dataset = include_bytes!("assets/movies.json");
-
-        let body: Value = serde_json::from_slice(dataset).unwrap();
-
-        self.add_or_replace_multiple_documents(body).await;
+    pub async fn trigger_dump_importation(&mut self, dump_uid: &str) -> (Value, StatusCode) {
+        let url = format!("/dumps/{}/import", dump_uid);
+        self.get_request(&url).await
     }
 }

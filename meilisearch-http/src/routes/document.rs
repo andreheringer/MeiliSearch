@@ -1,15 +1,16 @@
 use std::collections::{BTreeSet, HashSet};
 
+use actix_web::{delete, get, post, put};
 use actix_web::{web, HttpResponse};
-use actix_web_macros::{delete, get, post, put};
 use indexmap::IndexMap;
-use serde::Deserialize;
+use meilisearch_core::{update, MainReader};
 use serde_json::Value;
+use serde::Deserialize;
 
-use crate::error::ResponseError;
+use crate::Data;
+use crate::error::{Error, ResponseError};
 use crate::helpers::Authentication;
 use crate::routes::{IndexParam, IndexUpdateResponse};
-use crate::Data;
 
 type Document = IndexMap<String, Value>;
 
@@ -40,17 +41,20 @@ async fn get_document(
     let index = data
         .db
         .open_index(&path.index_uid)
-        .ok_or(ResponseError::index_not_found(&path.index_uid))?;
-
-    let document_id = meilisearch_core::serde::compute_document_id(&path.document_id);
+        .ok_or(Error::index_not_found(&path.index_uid))?;
 
     let reader = data.db.main_read_txn()?;
 
-    let response: Document = index
-        .document(&reader, None, document_id)?
-        .ok_or(ResponseError::document_not_found(&path.document_id))?;
+    let internal_id = index
+        .main
+        .external_to_internal_docid(&reader, &path.document_id)?
+        .ok_or(Error::document_not_found(&path.document_id))?;
 
-    Ok(HttpResponse::Ok().json(response))
+    let document: Document = index
+        .document(&reader, None, internal_id)?
+        .ok_or(Error::document_not_found(&path.document_id))?;
+
+    Ok(HttpResponse::Ok().json(document))
 }
 
 #[delete(
@@ -64,17 +68,12 @@ async fn delete_document(
     let index = data
         .db
         .open_index(&path.index_uid)
-        .ok_or(ResponseError::index_not_found(&path.index_uid))?;
-    let document_id = meilisearch_core::serde::compute_document_id(&path.document_id);
-
-    let mut update_writer = data.db.update_write_txn()?;
+        .ok_or(Error::index_not_found(&path.index_uid))?;
 
     let mut documents_deletion = index.documents_deletion();
-    documents_deletion.delete_document_by_id(document_id);
+    documents_deletion.delete_document_by_external_docid(path.document_id.clone());
 
-    let update_id = documents_deletion.finalize(&mut update_writer)?;
-
-    update_writer.commit()?;
+    let update_id = data.db.update_write(|w| documents_deletion.finalize(w))?;
 
     Ok(HttpResponse::Accepted().json(IndexUpdateResponse::with_id(update_id)))
 }
@@ -87,46 +86,63 @@ struct BrowseQuery {
     attributes_to_retrieve: Option<String>,
 }
 
+pub fn get_all_documents_sync(
+    data: &web::Data<Data>,
+    reader: &MainReader,
+    index_uid: &str,
+    offset: usize,
+    limit: usize,
+    attributes_to_retrieve: Option<&String>
+) -> Result<Vec<Document>, Error> {
+    let index = data
+        .db
+        .open_index(index_uid)
+        .ok_or(Error::index_not_found(index_uid))?;
+
+
+    let documents_ids: Result<BTreeSet<_>, _> = index
+        .documents_fields_counts
+        .documents_ids(reader)?
+        .skip(offset)
+        .take(limit)
+        .collect();
+
+    let attributes: Option<HashSet<&str>> = attributes_to_retrieve
+        .map(|a| a.split(',').collect());
+
+    let mut documents = Vec::new();
+    for document_id in documents_ids? {
+        if let Ok(Some(document)) =
+            index.document::<Document>(reader, attributes.as_ref(), document_id)
+        {
+            documents.push(document);
+        }
+    }
+
+    Ok(documents)
+}
+
 #[get("/indexes/{index_uid}/documents", wrap = "Authentication::Public")]
 async fn get_all_documents(
     data: web::Data<Data>,
     path: web::Path<IndexParam>,
     params: web::Query<BrowseQuery>,
 ) -> Result<HttpResponse, ResponseError> {
-    let index = data
-        .db
-        .open_index(&path.index_uid)
-        .ok_or(ResponseError::index_not_found(&path.index_uid))?;
-
     let offset = params.offset.unwrap_or(0);
     let limit = params.limit.unwrap_or(20);
-
+    let index_uid = &path.index_uid;
     let reader = data.db.main_read_txn()?;
+    
+    let documents = get_all_documents_sync(
+        &data,
+        &reader,
+        index_uid,
+        offset,
+        limit,
+        params.attributes_to_retrieve.as_ref()
+    )?;
 
-    let documents_ids: Result<BTreeSet<_>, _> = index
-        .documents_fields_counts
-        .documents_ids(&reader)?
-        .skip(offset)
-        .take(limit)
-        .collect();
-
-    let documents_ids = documents_ids?;
-
-    let attributes: Option<HashSet<&str>> = params
-        .attributes_to_retrieve
-        .as_ref()
-        .map(|a| a.split(',').collect());
-
-    let mut response = Vec::new();
-    for document_id in documents_ids {
-        if let Ok(Some(document)) =
-            index.document::<Document>(&reader, attributes.as_ref(), document_id)
-        {
-            response.push(document);
-        }
-    }
-
-    Ok(HttpResponse::Ok().json(response))
+    Ok(HttpResponse::Ok().json(documents))
 }
 
 fn find_primary_key(document: &IndexMap<String, Value>) -> Option<String> {
@@ -151,51 +167,41 @@ async fn update_multiple_documents(
     body: web::Json<Vec<Document>>,
     is_partial: bool,
 ) -> Result<HttpResponse, ResponseError> {
-    let index = data
-        .db
-        .open_index(&path.index_uid)
-        .ok_or(ResponseError::index_not_found(&path.index_uid))?;
+    let update_id = data.get_or_create_index(&path.index_uid, |index| {
+        let reader = data.db.main_read_txn()?;
 
-    let reader = data.db.main_read_txn()?;
+        let mut schema = index
+            .main
+            .schema(&reader)?
+            .ok_or(meilisearch_core::Error::SchemaMissing)?;
 
-    let mut schema = index
-        .main
-        .schema(&reader)?
-        .ok_or(ResponseError::internal("Impossible to retrieve the schema"))?;
+        if schema.primary_key().is_none() {
+            let id = match &params.primary_key {
+                Some(id) => id.to_string(),
+                None => body
+                    .first()
+                    .and_then(find_primary_key)
+                    .ok_or(meilisearch_core::Error::MissingPrimaryKey)?,
+            };
 
-    if schema.primary_key().is_none() {
-        let id = match &params.primary_key {
-            Some(id) => id.to_string(),
-            None => body
-                .first()
-                .and_then(find_primary_key)
-                .ok_or(ResponseError::bad_request("Could not infer a primary key"))?,
+            schema.set_primary_key(&id).map_err(Error::bad_request)?;
+
+            data.db.main_write(|w| index.main.put_schema(w, &schema))?;
+        }
+
+        let mut document_addition = if is_partial {
+            index.documents_partial_addition()
+        } else {
+            index.documents_addition()
         };
 
-        let mut writer = data.db.main_write_txn()?;
+        for document in body.into_inner() {
+            document_addition.update_document(document);
+        }
 
-        schema
-            .set_primary_key(&id)
-            .map_err(ResponseError::bad_request)?;
-        index.main.put_schema(&mut writer, &schema)?;
-        writer.commit()?;
-    }
-
-    let mut document_addition = if is_partial {
-        index.documents_partial_addition()
-    } else {
-        index.documents_addition()
-    };
-
-    for document in body.into_inner() {
-        document_addition.update_document(document);
-    }
-
-    let mut update_writer = data.db.update_write_txn()?;
-    let update_id = document_addition.finalize(&mut update_writer)?;
-    update_writer.commit()?;
-
-    Ok(HttpResponse::Accepted().json(IndexUpdateResponse::with_id(update_id)))
+        Ok(data.db.update_write(|w| document_addition.finalize(w))?)
+    })?;
+    return Ok(HttpResponse::Accepted().json(IndexUpdateResponse::with_id(update_id)));
 }
 
 #[post("/indexes/{index_uid}/documents", wrap = "Authentication::Private")]
@@ -230,22 +236,16 @@ async fn delete_documents(
     let index = data
         .db
         .open_index(&path.index_uid)
-        .ok_or(ResponseError::index_not_found(&path.index_uid))?;
-
-    let mut writer = data.db.update_write_txn()?;
+        .ok_or(Error::index_not_found(&path.index_uid))?;
 
     let mut documents_deletion = index.documents_deletion();
 
     for document_id in body.into_inner() {
-        if let Some(document_id) = meilisearch_core::serde::value_to_string(&document_id) {
-            documents_deletion
-                .delete_document_by_id(meilisearch_core::serde::compute_document_id(document_id));
-        }
+        let document_id = update::value_to_string(&document_id);
+        documents_deletion.delete_document_by_external_docid(document_id);
     }
 
-    let update_id = documents_deletion.finalize(&mut writer)?;
-
-    writer.commit()?;
+    let update_id = data.db.update_write(|w| documents_deletion.finalize(w))?;
 
     Ok(HttpResponse::Accepted().json(IndexUpdateResponse::with_id(update_id)))
 }
@@ -258,13 +258,9 @@ async fn clear_all_documents(
     let index = data
         .db
         .open_index(&path.index_uid)
-        .ok_or(ResponseError::index_not_found(&path.index_uid))?;
+        .ok_or(Error::index_not_found(&path.index_uid))?;
 
-    let mut writer = data.db.update_write_txn()?;
-
-    let update_id = index.clear_all(&mut writer)?;
-
-    writer.commit()?;
+    let update_id = data.db.update_write(|w| index.clear_all(w))?;
 
     Ok(HttpResponse::Accepted().json(IndexUpdateResponse::with_id(update_id)))
 }

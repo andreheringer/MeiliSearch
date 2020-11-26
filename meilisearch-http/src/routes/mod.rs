@@ -10,6 +10,7 @@ pub mod setting;
 pub mod stats;
 pub mod stop_words;
 pub mod synonym;
+pub mod dump;
 
 #[derive(Deserialize)]
 pub struct IndexParam {

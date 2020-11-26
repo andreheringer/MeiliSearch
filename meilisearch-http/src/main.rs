@@ -2,12 +2,11 @@ use std::{env, thread};
 
 use actix_cors::Cors;
 use actix_web::{middleware, HttpServer};
-use log::info;
 use main_error::MainError;
-use meilisearch_http::data::Data;
-use meilisearch_http::option::Opt;
-use meilisearch_http::{create_app, index_update_callback};
+use meilisearch_http::helpers::NormalizePath;
+use meilisearch_http::{create_app, index_update_callback, Data, Opt};
 use structopt::StructOpt;
+use meilisearch_http::{snapshot, dump};
 
 mod analytics;
 
@@ -15,9 +14,22 @@ mod analytics;
 #[global_allocator]
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
-#[actix_rt::main]
+#[actix_web::main]
 async fn main() -> Result<(), MainError> {
     let opt = Opt::from_args();
+
+    #[cfg(all(not(debug_assertions), feature = "sentry"))]
+    let _sentry = sentry::init((
+        if !opt.no_sentry {
+            Some(opt.sentry_dsn.clone())
+        } else {
+            None
+        },
+        sentry::ClientOptions {
+            release: sentry::release_name!(),
+            ..Default::default()
+        },
+    ));
 
     match opt.env.as_ref() {
         "production" => {
@@ -27,6 +39,12 @@ async fn main() -> Result<(), MainError> {
                         .into(),
                 );
             }
+
+            #[cfg(all(not(debug_assertions), feature = "sentry"))]
+            if !opt.no_sentry && _sentry.is_enabled() {
+                sentry::integrations::panic::register_panic_handler(); // TODO: This shouldn't be needed when upgrading to sentry 0.19.0. These integrations are turned on by default when using `sentry::init`.
+                sentry::integrations::env_logger::init(None, Default::default());
+            }
         }
         "development" => {
             env_logger::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -34,33 +52,56 @@ async fn main() -> Result<(), MainError> {
         _ => unreachable!(),
     }
 
-    if !opt.no_analytics {
-        thread::spawn(analytics::analytics_sender);
+    if let Some(path) = &opt.import_snapshot {
+        snapshot::load_snapshot(&opt.db_path, path, opt.ignore_snapshot_if_db_exists, opt.ignore_missing_snapshot)?;
     }
 
-    let data = Data::new(opt.clone());
+    let data = Data::new(opt.clone())?;
+
+    if !opt.no_analytics {
+        let analytics_data = data.clone();
+        let analytics_opt = opt.clone();
+        thread::spawn(move || analytics::analytics_sender(analytics_data, analytics_opt));
+    }
 
     let data_cloned = data.clone();
     data.db.set_update_callback(Box::new(move |name, status| {
         index_update_callback(name, &data_cloned, status);
     }));
 
+
+    if let Some(path) = &opt.import_dump {
+        dump::import_dump(&data, path, opt.dump_batch_size)?;
+    }
+
+    if opt.schedule_snapshot {
+        snapshot::schedule_snapshot(data.clone(), &opt.snapshot_dir, opt.snapshot_interval_sec.unwrap_or(86400))?;
+    }
+
     print_launch_resume(&opt, &data);
 
-    HttpServer::new(move || {
+    let http_server = HttpServer::new(move || {
         create_app(&data)
             .wrap(
                 Cors::new()
                     .send_wildcard()
-                    .allowed_header("x-meili-api-key")
+                    .allowed_headers(vec!["content-type", "x-meili-api-key"])
+                    .max_age(86_400) // 24h
                     .finish(),
             )
             .wrap(middleware::Logger::default())
             .wrap(middleware::Compress::default())
-    })
-    .bind(opt.http_addr)?
-    .run()
-    .await?;
+            .wrap(NormalizePath)
+    });
+
+    if let Some(config) = opt.get_ssl_config()? {
+        http_server
+            .bind_rustls(opt.http_addr, config)?
+            .run()
+            .await?;
+    } else {
+        http_server.bind(opt.http_addr)?.run().await?;
+    }
 
     Ok(())
 }
@@ -77,37 +118,52 @@ pub fn print_launch_resume(opt: &Opt, data: &Data) {
 888       888  "Y8888  888 888 888  "Y8888P"   "Y8888  "Y888888 888     "Y8888P 888  888
 "#;
 
-    info!("{}", ascii_name);
+    eprintln!("{}", ascii_name);
 
-    info!("Database path: {:?}", opt.db_path);
-    info!("Start server on: {:?}", opt.http_addr);
-    info!("Environment: {:?}", opt.env);
-    info!("Commit SHA: {:?}", env!("VERGEN_SHA").to_string());
-    info!(
-        "Build date: {:?}",
+    eprintln!("Database path:\t\t{:?}", opt.db_path);
+    eprintln!("Server listening on:\t{:?}", opt.http_addr);
+    eprintln!("Environment:\t\t{:?}", opt.env);
+    eprintln!("Commit SHA:\t\t{:?}", env!("VERGEN_SHA").to_string());
+    eprintln!(
+        "Build date:\t\t{:?}",
         env!("VERGEN_BUILD_TIMESTAMP").to_string()
     );
-    info!(
-        "Package version: {:?}",
+    eprintln!(
+        "Package version:\t{:?}",
         env!("CARGO_PKG_VERSION").to_string()
     );
 
-    if let Some(master_key) = &data.api_keys.master {
-        info!("Master Key: {:?}", master_key);
-
-        if let Some(private_key) = &data.api_keys.private {
-            info!("Private Key: {:?}", private_key);
+    #[cfg(all(not(debug_assertions), feature = "sentry"))]
+    eprintln!(
+        "Sentry DSN:\t\t{:?}",
+        if !opt.no_sentry {
+            &opt.sentry_dsn
+        } else {
+            "Disabled"
         }
+    );
 
-        if let Some(public_key) = &data.api_keys.public {
-            info!("Public Key: {:?}", public_key);
+    eprintln!(
+        "Amplitude Analytics:\t{:?}",
+        if !opt.no_analytics {
+            "Enabled"
+        } else {
+            "Disabled"
         }
+    );
+
+    eprintln!();
+
+    if data.api_keys.master.is_some() {
+        eprintln!("A Master Key has been set. Requests to MeiliSearch won't be authorized unless you provide an authentication key.");
     } else {
-        info!("No master key found; The server will have no securities.\
-            If you need some protection in development mode, please export a key. export MEILI_MASTER_KEY=xxx");
+        eprintln!("No master key found; The server will accept unidentified requests. \
+            If you need some protection in development mode, please export a key: export MEILI_MASTER_KEY=xxx");
     }
 
-    info!("If you need extra information; Please refer to the documentation: http://docs.meilisearch.com");
-    info!("If you want to support us or help us; Please consult our Github repo: http://github.com/meilisearch/meilisearch");
-    info!("If you want to contact us; Please chat with us on http://meilisearch.com or by email to bonjour@meilisearch.com");
+    eprintln!();
+    eprintln!("Documentation:\t\thttps://docs.meilisearch.com");
+    eprintln!("Source code:\t\thttps://github.com/meilisearch/meilisearch");
+    eprintln!("Contact:\t\thttps://docs.meilisearch.com/resources/contact.html or bonjour@meilisearch.com");
+    eprintln!();
 }

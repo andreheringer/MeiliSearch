@@ -31,7 +31,7 @@ dependencies = [
  "futures-util",
  "http",
  "log",
- "rustls",
+ "rustls 0.18.1",
  "tokio-rustls",
  "trust-dns-proto",
  "trust-dns-resolver",
@@ -205,7 +205,7 @@ dependencies = [
  "actix-service",
  "actix-utils",
  "futures-util",
- "rustls",
+ "rustls 0.18.1",
  "tokio-rustls",
  "webpki",
  "webpki-roots 0.20.0",
@@ -261,7 +261,7 @@ dependencies = [
  "mime",
  "pin-project 0.4.27",
  "regex",
- "rustls",
+ "rustls 0.18.1",
  "serde",
  "serde_json",
  "serde_urlencoded",
@@ -388,7 +388,7 @@ dependencies = [
  "mime",
  "percent-encoding",
  "rand 0.7.3",
- "rustls",
+ "rustls 0.18.1",
  "serde",
  "serde_json",
  "serde_urlencoded",
@@ -1305,7 +1305,7 @@ dependencies = [
  "futures-util",
  "hyper",
  "log",
- "rustls",
+ "rustls 0.18.1",
  "tokio",
  "tokio-rustls",
  "webpki",
@@ -1631,7 +1631,7 @@ dependencies = [
  "once_cell",
  "rand 0.7.3",
  "regex",
- "rustls",
+ "rustls 0.19.0",
  "sentry",
  "serde",
  "serde_json",
@@ -2268,7 +2268,7 @@ dependencies = [
  "mime_guess",
  "percent-encoding",
  "pin-project-lite",
- "rustls",
+ "rustls 0.18.1",
  "serde",
  "serde_json",
  "serde_urlencoded",
@@ -2329,6 +2329,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d1126dcf58e93cee7d098dbda643b5f92ed724f1f6a63007c1116eed6700c81"
 dependencies = [
  "base64 0.12.3",
+ "log",
+ "ring",
+ "sct",
+ "webpki",
+]
+
+[[package]]
+name = "rustls"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "064fd21ff87c6e87ed4506e68beb42459caa4a0e2eb144932e6776768556980b"
+dependencies = [
+ "base64 0.13.0",
  "log",
  "ring",
  "sct",
@@ -2950,7 +2963,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e12831b255bcfa39dc0436b01e19fea231a37db570686c06ee72c423479f889a"
 dependencies = [
  "futures-core",
- "rustls",
+ "rustls 0.18.1",
  "tokio",
  "webpki",
 ]
@@ -3125,7 +3138,7 @@ dependencies = [
  "log",
  "once_cell",
  "qstring",
- "rustls",
+ "rustls 0.18.1",
  "url",
  "webpki",
  "webpki-roots 0.20.0",

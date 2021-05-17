@@ -326,8 +326,11 @@ fn search_command(command: SearchCommand, database: Database) -> Result<(), Box<
 
     let schema = schema.ok_or(meilisearch_core::Error::SchemaMissing)?;
 
-    let fields = command.displayed_fields.iter().map(String::as_str);
-    let fields = HashSet::from_iter(fields);
+    let fields = command
+        .displayed_fields
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
 
     let config = Config::builder().auto_add_history(true).build();
     let mut readline = Editor::<()>::with_config(config);
@@ -349,8 +352,8 @@ fn search_command(command: SearchCommand, database: Database) -> Result<(), Box<
 
                 if let Some(ref filter) = command.filter {
                     let filter = filter.as_str();
-                    let (positive, filter) = if filter.chars().next() == Some('!') {
-                        (false, &filter[1..])
+                    let (positive, filter) = if let Some(stripped) = filter.strip_prefix('!') {
+                        (false, stripped)
                     } else {
                         (true, filter)
                     };

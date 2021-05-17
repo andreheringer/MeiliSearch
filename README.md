@@ -6,6 +6,7 @@
 
 <h4 align="center">
   <a href="https://www.meilisearch.com">Website</a> |
+  <a href="https://roadmap.meilisearch.com/tabs/1-under-consideration">Roadmap</a> |
   <a href="https://blog.meilisearch.com">Blog</a> |
   <a href="https://fr.linkedin.com/company/meilisearch">LinkedIn</a> |
   <a href="https://twitter.com/meilisearch">Twitter</a> |
@@ -16,7 +17,7 @@
 <p align="center">
   <a href="https://github.com/meilisearch/MeiliSearch/actions"><img src="https://github.com/meilisearch/MeiliSearch/workflows/Cargo%20test/badge.svg" alt="Build Status"></a>
   <a href="https://deps.rs/repo/github/meilisearch/MeiliSearch"><img src="https://deps.rs/repo/github/meilisearch/MeiliSearch/status.svg" alt="Dependency status"></a>
-  <a href="https://github.com/meilisearch/MeiliSearch/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-informational" alt="License"></a>
+  <a href="https://github.com/meilisearch/MeiliSearch/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-informational" alt="License"></a>
   <a href="https://slack.meilisearch.com"><img src="https://img.shields.io/badge/slack-MeiliSearch-blue.svg?logo=slack" alt="Slack"></a>
   <a href="https://github.com/meilisearch/MeiliSearch/discussions" alt="Discussions"><img src="https://img.shields.io/badge/github-discussions-red" /></a>
   <a href="https://app.bors.tech/repositories/26457"><img src="https://bors.tech/images/badge_small.svg" alt="Bors enabled"></a>
@@ -47,7 +48,7 @@ For more information about features go to [our documentation](https://docs.meili
 
 ### Deploy the Server
 
-#### Brew (Mac OS)
+#### Homebrew (Mac OS)
 
 ```bash
 brew update && brew install meilisearch
@@ -57,7 +58,7 @@ meilisearch
 #### Docker
 
 ```bash
-docker run -p 7700:7700 -v $(pwd)/data.ms:/data.ms getmeili/meilisearch
+docker run -p 7700:7700 -v "$(pwd)/data.ms:/data.ms" getmeili/meilisearch
 ```
 
 #### Try MeiliSearch in our Sandbox
@@ -96,13 +97,6 @@ If you have the latest stable Rust toolchain installed on your local system, clo
 ```bash
 git clone https://github.com/meilisearch/MeiliSearch.git
 cd MeiliSearch
-```
-
-In the cloned repository, compile MeiliSearch.
-
-```bash
-rustup override set stable
-rustup update stable
 cargo run --release
 ```
 
@@ -180,21 +174,22 @@ Now that your MeiliSearch server is up and running, you can learn more about how
 
 ## Contributing
 
-Hey! We're glad you're thinking about contributing to MeiliSearch! If you think something is missing or could be improved, please open issues and pull requests. If you'd like to help this project grow, we'd love to have you! To start contributing, checking [issues tagged as "good-first-issue"](https://github.com/meilisearch/MeiliSearch/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) is a good start!
+Hey! We're glad you're thinking about contributing to MeiliSearch! However, we are currently working on a huge refactor and accepting PRs on this repository wouldn't be productive. We are sorry about this! Be sure we are doing our best so that you can contribute to MeiliSearch again as soon as possible ❤️
 
 ## Telemetry
 
 MeiliSearch collects anonymous data regarding general usage.
-This helps us better understand developers usage of MeiliSearch features.<br/>
-To see what information we're retrieving, please see the complete list [on the dedicated issue](https://github.com/meilisearch/MeiliSearch/issues/720).<br/>
-We also use Sentry to make us crash and error reports. If you want to know more about what Sentry collects, please visit their [privacy policy website](https://sentry.io/privacy/).<br/>
+This helps us better understand developers' usage of MeiliSearch features.
+
+To see what information we're retrieving, please see the complete list [on the dedicated issue](https://github.com/meilisearch/MeiliSearch/issues/720).
+
+We also use Sentry to make us crash and error reports. If you want to know more about what Sentry collects, please visit their [privacy policy website](https://sentry.io/privacy/).
+
 This program is optional, you can disable these analytics by using the `MEILI_NO_ANALYTICS` env variable.
 
 ## 💌 Contact
 
-Feel free to contact us about any questions you may have:
-* At [bonjour@meilisearch.com](mailto:bonjour@meilisearch.com)
-* Via the chat box available on every page of [our documentation](https://docs.meilisearch.com/) and on [our landing page](https://www.meilisearch.com/).
+Feel free to contact us with any questions you may have:
 * 🆕 Join our [GitHub Discussions forum](https://github.com/meilisearch/MeiliSearch/discussions)
 * Join our [Slack community](https://slack.meilisearch.com/).
 * By opening an issue.

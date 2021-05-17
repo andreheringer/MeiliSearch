@@ -11,7 +11,6 @@ use meilisearch_core::criterion::*;
 use meilisearch_core::settings::RankingRule;
 use meilisearch_core::{Highlight, Index, RankedMap};
 use meilisearch_schema::{FieldId, Schema};
-use meilisearch_tokenizer::is_cjk;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use siphasher::sip::SipHasher;
@@ -178,7 +177,7 @@ impl<'a> SearchBuilder<'a> {
                 all_attributes.extend(&all_formatted);
             },
             None => {
-                all_attributes.extend(schema.displayed_name());
+                all_attributes.extend(schema.displayed_names());
                 // If we specified at least one attribute to highlight or crop then
                 // all available attributes will be returned in the _formatted field.
                 if self.attributes_to_highlight.is_some() || self.attributes_to_crop.is_some() {
@@ -193,9 +192,7 @@ impl<'a> SearchBuilder<'a> {
                 .index
                 .document(reader, Some(&all_attributes), doc.id)
                 .map_err(|e| Error::retrieve_document(doc.id.0, e))?
-                .ok_or(Error::internal(
-                    "Impossible to retrieve the document; Corrupted data",
-                ))?;
+                .unwrap_or_default();
 
             let mut formatted = document.iter()
                 .filter(|(key, _)| all_formatted.contains(key.as_str()))
@@ -346,7 +343,7 @@ pub struct SearchResult {
 
 /// returns the start index and the length on the crop.
 fn aligned_crop(text: &str, match_index: usize, context: usize) -> (usize, usize) {
-    let is_word_component = |c: &char| c.is_alphanumeric() && !is_cjk(*c);
+    let is_word_component = |c: &char| c.is_alphanumeric() && !super::is_cjk(*c);
 
     let word_end_index = |mut index| {
         if text.chars().nth(index - 1).map_or(false, |c| is_word_component(&c)) {
@@ -447,7 +444,7 @@ fn calculate_matches(
                     continue;
                 }
             }
-            if !schema.displayed_name().contains(attribute) {
+            if !schema.displayed_names().contains(&attribute) {
                 continue;
             }
             if let Some(pos) = matches_result.get_mut(attribute) {
@@ -482,7 +479,7 @@ fn calculate_highlights(
     for (attribute, matches) in matches.iter() {
         if attributes_to_highlight.contains(attribute) {
             if let Some(Value::String(value)) = document.get(attribute) {
-                let value: Vec<_> = value.chars().collect();
+                let value = value;
                 let mut highlighted_value = String::new();
                 let mut index = 0;
 
@@ -495,16 +492,16 @@ fn calculate_highlights(
                     let before = value.get(index..m.start);
                     let highlighted = value.get(m.start..(m.start + m.length));
                     if let (Some(before), Some(highlighted)) = (before, highlighted) {
-                        highlighted_value.extend(before);
+                        highlighted_value.push_str(before);
                         highlighted_value.push_str("<em>");
-                        highlighted_value.extend(highlighted);
+                        highlighted_value.push_str(highlighted);
                         highlighted_value.push_str("</em>");
                         index = m.start + m.length;
                     } else {
                         error!("value: {:?}; index: {:?}, match: {:?}", value, index, m);
                     }
                 }
-                highlighted_value.extend(value[index..].iter());
+                highlighted_value.push_str(&value[index..]);
                 highlight_result.insert(attribute.to_string(), Value::String(highlighted_value));
             };
         }
@@ -600,7 +597,7 @@ mod tests {
 
         let mut m = Vec::new();
         m.push(MatchPosition {
-            start: 510,
+            start: 529,
             length: 9,
         });
         matches.insert("description".to_string(), m);

@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::mem;
 
-use heed::{RwTxn, RoTxn, RoRange, types::Str, BytesEncode, BytesDecode};
+use heed::{RwTxn, RoTxn, RoPrefix, types::Str, BytesEncode, BytesDecode};
 use sdset::{SetBuf, Set, SetOperation};
 
 use meilisearch_types::DocumentId;
@@ -48,10 +48,10 @@ impl<'a> BytesDecode<'a> for FacetData {
         let mut size_buf = [0; LEN];
         size_buf.copy_from_slice(bytes.get(0..LEN)?);
         // decode size of the first item from the bytes
-        let first_size = usize::from_be_bytes(size_buf);
+        let first_size = u64::from_be_bytes(size_buf);
         // decode first and second items
-        let first_item = Str::bytes_decode(bytes.get(LEN..(LEN + first_size))?)?;
-        let second_item = CowSet::bytes_decode(bytes.get((LEN + first_size)..)?)?;
+        let first_item = Str::bytes_decode(bytes.get(LEN..(LEN + first_size as usize))?)?;
+        let second_item = CowSet::bytes_decode(bytes.get((LEN + first_size as usize)..)?)?;
         Some((first_item, second_item))
     }
 }
@@ -62,7 +62,7 @@ impl Facets {
         Ok(self.facets.put(writer, &facet_key, &(facet_value, doc_ids))?)
     }
 
-    pub fn field_document_ids<'txn>(&self, reader: &'txn RoTxn<MainT>, field_id: FieldId) -> MResult<RoRange<'txn, FacetKey, FacetData>> {
+    pub fn field_document_ids<'txn>(&self, reader: &'txn RoTxn<MainT>, field_id: FieldId) -> MResult<RoPrefix<'txn, FacetKey, FacetData>> {
         Ok(self.facets.prefix_iter(reader, &FacetKey::new(field_id, String::new()))?)
     }
 

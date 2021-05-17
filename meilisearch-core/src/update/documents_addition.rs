@@ -23,6 +23,8 @@ pub struct DocumentsAddition<D> {
     updates_store: store::Updates,
     updates_results_store: store::UpdatesResults,
     updates_notifier: UpdateEventsEmitter,
+    // Whether the user explicitly set the primary key in the update
+    primary_key: Option<String>,
     documents: Vec<D>,
     is_partial: bool,
 }
@@ -39,6 +41,7 @@ impl<D> DocumentsAddition<D> {
             updates_notifier,
             documents: Vec::new(),
             is_partial: false,
+            primary_key: None,
         }
     }
 
@@ -53,7 +56,12 @@ impl<D> DocumentsAddition<D> {
             updates_notifier,
             documents: Vec::new(),
             is_partial: true,
+            primary_key: None,
         }
+    }
+
+    pub fn set_primary_key(&mut self, primary_key: String) {
+        self.primary_key = Some(primary_key);
     }
 
     pub fn update_document(&mut self, document: D) {
@@ -71,6 +79,7 @@ impl<D> DocumentsAddition<D> {
             self.updates_results_store,
             self.documents,
             self.is_partial,
+            self.primary_key,
         )?;
         Ok(update_id)
     }
@@ -88,6 +97,7 @@ pub fn push_documents_addition<D: serde::Serialize>(
     updates_results_store: store::UpdatesResults,
     addition: Vec<D>,
     is_partial: bool,
+    primary_key: Option<String>,
 ) -> MResult<u64> {
     let mut values = Vec::with_capacity(addition.len());
     for add in addition {
@@ -99,9 +109,9 @@ pub fn push_documents_addition<D: serde::Serialize>(
     let last_update_id = next_update_id(writer, updates_store, updates_results_store)?;
 
     let update = if is_partial {
-        Update::documents_partial(values)
+        Update::documents_partial(primary_key, values)
     } else {
-        Update::documents_addition(values)
+        Update::documents_addition(primary_key, values)
     };
 
     updates_store.put_update(writer, last_update_id, &update)?;
@@ -110,7 +120,7 @@ pub fn push_documents_addition<D: serde::Serialize>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn index_document<A>(
+fn index_document<A: AsRef<[u8]>>(
     writer: &mut heed::RwTxn<MainT>,
     documents_fields: DocumentsFields,
     documents_fields_counts: DocumentsFieldsCounts,
@@ -121,18 +131,17 @@ fn index_document<A>(
     document_id: DocumentId,
     value: &Value,
 ) -> MResult<()>
-where A: AsRef<[u8]>,
 {
     let serialized = serde_json::to_vec(value)?;
     documents_fields.put_document_field(writer, document_id, field_id, &serialized)?;
 
-    if let Some(indexed_pos) = schema.is_indexed(field_id) {
-        let number_of_words = index_value(indexer, document_id, *indexed_pos, value);
+    if let Some(indexed_pos) = schema.is_searchable(field_id) {
+        let number_of_words = index_value(indexer, document_id, indexed_pos, value);
         if let Some(number_of_words) = number_of_words {
             documents_fields_counts.put_document_field_count(
                 writer,
                 document_id,
-                *indexed_pos,
+                indexed_pos,
                 number_of_words as u16,
             )?;
         }
@@ -146,11 +155,12 @@ where A: AsRef<[u8]>,
     Ok(())
 }
 
-pub fn apply_addition<'a, 'b>(
-    writer: &'a mut heed::RwTxn<'b, MainT>,
+pub fn apply_addition(
+    writer: &mut heed::RwTxn<MainT>,
     index: &store::Index,
     new_documents: Vec<IndexMap<String, Value>>,
-    partial: bool
+    partial: bool,
+    primary_key: Option<String>,
 ) -> MResult<()>
 {
     let mut schema = match index.main.schema(writer)? {
@@ -163,7 +173,14 @@ pub fn apply_addition<'a, 'b>(
     let internal_docids = index.main.internal_docids(writer)?;
     let mut available_ids = DiscoverIds::new(&internal_docids);
 
-    let primary_key = schema.primary_key().ok_or(Error::MissingPrimaryKey)?;
+    let primary_key = match schema.primary_key() {
+        Some(primary_key) => primary_key.to_string(),
+        None => {
+            let name = primary_key.ok_or(Error::MissingPrimaryKey)?;
+            schema.set_primary_key(&name)?;
+            name
+        }
+    };
 
     // 1. store documents ids for future deletion
     let mut documents_additions = HashMap::new();
@@ -222,13 +239,13 @@ pub fn apply_addition<'a, 'b>(
     let stop_words = index.main.stop_words_fst(writer)?.map_data(Cow::into_owned)?;
 
 
-    let mut indexer = RawIndexer::new(stop_words);
+    let mut indexer = RawIndexer::new(&stop_words);
 
     // For each document in this update
     for (document_id, document) in &documents_additions {
         // For each key-value pair in the document.
         for (attribute, value) in document {
-            let field_id = schema.insert_and_index(&attribute)?;
+            let (field_id, _) = schema.insert_with_position(&attribute)?;
             index_document(
                 writer,
                 index.documents_fields,
@@ -272,20 +289,22 @@ pub fn apply_addition<'a, 'b>(
     Ok(())
 }
 
-pub fn apply_documents_partial_addition<'a, 'b>(
-    writer: &'a mut heed::RwTxn<'b, MainT>,
+pub fn apply_documents_partial_addition(
+    writer: &mut heed::RwTxn<MainT>,
     index: &store::Index,
     new_documents: Vec<IndexMap<String, Value>>,
+    primary_key: Option<String>,
 ) -> MResult<()> {
-    apply_addition(writer, index, new_documents, true)
+    apply_addition(writer, index, new_documents, true, primary_key)
 }
 
-pub fn apply_documents_addition<'a, 'b>(
-    writer: &'a mut heed::RwTxn<'b, MainT>,
+pub fn apply_documents_addition(
+    writer: &mut heed::RwTxn<MainT>,
     index: &store::Index,
     new_documents: Vec<IndexMap<String, Value>>,
+    primary_key: Option<String>,
 ) -> MResult<()> {
-    apply_addition(writer, index, new_documents, false)
+    apply_addition(writer, index, new_documents, false, primary_key)
 }
 
 pub fn reindex_all_documents(writer: &mut heed::RwTxn<MainT>, index: &store::Index) -> MResult<()> {
@@ -317,7 +336,7 @@ pub fn reindex_all_documents(writer: &mut heed::RwTxn<MainT>, index: &store::Ind
         .unwrap();
 
     let number_of_inserted_documents = documents_ids_to_reindex.len();
-    let mut indexer = RawIndexer::new(stop_words);
+    let mut indexer = RawIndexer::new(&stop_words);
     let mut ram_store = HashMap::new();
 
     if let Some(ref attributes_for_facetting) = index.main.attributes_for_faceting(writer)? {
@@ -373,14 +392,13 @@ pub fn reindex_all_documents(writer: &mut heed::RwTxn<MainT>, index: &store::Ind
     Ok(())
 }
 
-pub fn write_documents_addition_index<A>(
+pub fn write_documents_addition_index<A: AsRef<[u8]>>(
     writer: &mut heed::RwTxn<MainT>,
     index: &store::Index,
     ranked_map: &RankedMap,
     number_of_inserted_documents: usize,
     indexer: RawIndexer<A>,
 ) -> MResult<()>
-where A: AsRef<[u8]>,
 {
     let indexed = indexer.build();
     let mut delta_words_builder = SetBuilder::memory();

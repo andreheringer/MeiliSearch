@@ -130,13 +130,13 @@ async fn search_unexpected_params() {
 
     let expected = "unknown field `lol`, expected one of `q`, `offset`, `limit`, `attributesToRetrieve`, `attributesToCrop`, `cropLength`, `attributesToHighlight`, `filters`, `matches`, `facetFilters`, `facetsDistribution` at line 1 column 6";
 
-    let post_query = serde_json::from_str::<meilisearch_http::routes::search::SearchQueryPost>(&query.clone().to_string());
+    let post_query = serde_json::from_str::<meilisearch_http::routes::search::SearchQueryPost>(&query.to_string());
     assert!(post_query.is_err());
-    assert_eq!(expected.clone(), post_query.err().unwrap().to_string());
+    assert_eq!(expected, post_query.err().unwrap().to_string());
 
-    let get_query: Result<meilisearch_http::routes::search::SearchQuery, _> = serde_json::from_str(&query.clone().to_string());
+    let get_query: Result<meilisearch_http::routes::search::SearchQuery, _> = serde_json::from_str(&query.to_string());
     assert!(get_query.is_err());
-    assert_eq!(expected.clone(), get_query.err().unwrap().to_string());
+    assert_eq!(expected, get_query.err().unwrap().to_string());
 }
 
 #[actix_rt::test]
@@ -359,6 +359,66 @@ async fn search_with_attribute_to_highlight_wildcard() {
 }
 
 #[actix_rt::test]
+async fn search_with_attribute_to_highlight_wildcard_chinese() {
+    let mut server = common::Server::test_server().await;
+
+    let query = json!({
+        "q": "子孙",
+        "limit": 1,
+        "attributesToHighlight": ["*"]
+    });
+
+    let expected = json!([
+        {
+            "id": 77,
+            "isActive": false,
+            "balance": "$1,274.29",
+            "picture": "http://placehold.it/32x32",
+            "age": 25,
+            "color": "Red",
+            "name": "孫武",
+            "gender": "male",
+            "email": "SunTzu@chorizon.com",
+            "phone": "+1 (810) 407-3258",
+            "address": "吴國",
+            "about": "孫武（前544年－前470年或前496年），字長卿，春秋時期齊國人，著名軍事家、政治家，兵家代表人物。兵書《孫子兵法》的作者，後人尊稱為孫子、兵聖、東方兵聖，山東、蘇州等地尚有祀奉孫武的廟宇兵聖廟。其族人为樂安孫氏始祖，次子孙明为富春孫氏始祖。\r\n",
+            "registered": "2014-10-20T10:13:32 -02:00",
+            "latitude": 17.11935,
+            "longitude": 65.38197,
+            "tags": [
+              "new issue",
+              "wontfix"
+            ],
+          "_formatted": {
+            "id": 77,
+            "isActive": false,
+            "balance": "$1,274.29",
+            "picture": "http://placehold.it/32x32",
+            "age": 25,
+            "color": "Red",
+            "name": "<em>孫武</em>",
+            "gender": "male",
+            "email": "SunTzu@chorizon.com",
+            "phone": "+1 (810) 407-3258",
+            "address": "吴國",
+            "about": "<em>孫武</em>（前544年－前470年或前496年），字長卿，春秋時期齊國人，著名軍事家、政治家，兵家代表人物。兵書《<em>孫子</em>兵法》的作者，後人尊稱為<em>孫子</em>、兵聖、東方兵聖，山東、蘇州等地尚有祀奉<em>孫武</em>的廟宇兵聖廟。其族人为樂安<em>孫氏</em>始祖，次<em>子孙</em>明为富春孫氏始祖。\r\n",
+            "registered": "2014-10-20T10:13:32 -02:00",
+            "latitude": 17.11935,
+            "longitude": 65.38197,
+            "tags": [
+              "new issue",
+              "wontfix"
+            ]
+          }
+        }
+    ]);
+
+    test_post_get_search!(server, query, |response, _status_code| {
+        assert_json_eq!(expected.clone(), response["hits"].clone(), ordered: false);
+    });
+}
+
+#[actix_rt::test]
 async fn search_with_attribute_to_highlight_1() {
     let mut server = common::Server::test_server().await;
 
@@ -553,6 +613,16 @@ async fn search_with_attributes_to_retrieve() {
 
     test_post_get_search!(server, query, |response, _status_code| {
         assert_json_eq!(expected.clone(), response["hits"].clone(), ordered: false);
+    });
+
+    let query = json!({
+        "q": "cherry",
+        "limit": 1,
+        "attributesToRetrieve": [],
+    });
+
+    test_post_get_search!(server, query, |response, _status_code| {
+        assert_json_eq!(json!([{}]), response["hits"].clone(), ordered: false);
     });
 }
 
@@ -1779,8 +1849,6 @@ async fn update_documents_with_facet_distribution() {
     server.create_index(body).await;
     let settings = json!({
         "attributesForFaceting": ["genre"],
-        "displayedAttributes": ["genre"],
-        "searchableAttributes": ["genre"]
     });
     server.update_all_settings(settings).await;
     let update1 = json!([
@@ -1875,5 +1943,34 @@ async fn test_filter_nb_hits_search_normal() {
 
     let (response, _) = server.search_post(json!({"q": "a", "filters": "size < 3"})).await;
     println!("result: {}", response);
+    assert_eq!(response["nbHits"], 1);
+}
+
+#[actix_rt::test]
+async fn test_max_word_query() {
+    use meilisearch_core::MAX_QUERY_LEN;
+
+    let mut server = common::Server::with_uid("test");
+    let body = json!({
+        "uid": "test",
+        "primaryKey": "id",
+    });
+    server.create_index(body).await;
+    let documents = json!([
+        {"id": 1, "value": "1 2 3 4 5 6 7 8 9 10 11"},
+        {"id": 2, "value": "1 2 3 4 5 6 7 8 9 10"}]
+    );
+    server.add_or_update_multiple_documents(documents).await;
+
+    // We want to create a request where the 11 will be ignored. We have 2 documents, where a query
+    // with only one should return both, but a query with 1 and 11 should return only the first.
+    // This is how we know that outstanding query words have been ignored
+    let query = (0..MAX_QUERY_LEN)
+        .map(|_| "1")
+        .chain(std::iter::once("11"))
+        .fold(String::new(), |s, w| s + " " + w);
+    let (response, _) = server.search_post(json!({"q": query})).await;
+    assert_eq!(response["nbHits"], 2);
+    let (response, _) = server.search_post(json!({"q": "1 11"})).await;
     assert_eq!(response["nbHits"], 1);
 }

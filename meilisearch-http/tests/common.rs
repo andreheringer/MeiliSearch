@@ -57,11 +57,11 @@ impl Server {
             no_analytics: true,
             max_mdb_size: default_db_options.main_map_size,
             max_udb_size: default_db_options.update_map_size,
-            http_payload_size_limit: 10000000,
+            http_payload_size_limit: 100000000,
             ..Opt::default()
         };
 
-        let data = Data::new(opt.clone()).unwrap();
+        let data = Data::new(opt).unwrap();
 
         Server {
             uid: uid.to_string(),
@@ -87,40 +87,6 @@ impl Server {
                 "attribute",
                 "wordsPosition",
                 "exactness",
-            ],
-            "searchableAttributes": [
-                "balance",
-                "picture",
-                "age",
-                "color",
-                "name",
-                "gender",
-                "email",
-                "phone",
-                "address",
-                "about",
-                "registered",
-                "latitude",
-                "longitude",
-                "tags",
-            ],
-            "displayedAttributes": [
-                "id",
-                "isActive",
-                "balance",
-                "picture",
-                "age",
-                "color",
-                "name",
-                "gender",
-                "email",
-                "phone",
-                "address",
-                "about",
-                "registered",
-                "latitude",
-                "longitude",
-                "tags",
             ],
         });
 
@@ -160,11 +126,11 @@ impl Server {
         eprintln!("get_request: {}", url);
 
         let mut app =
-            test::init_service(meilisearch_http::create_app(&self.data).wrap(NormalizePath)).await;
+            test::init_service(meilisearch_http::create_app(&self.data, true).wrap(NormalizePath)).await;
 
         let req = test::TestRequest::get().uri(url).to_request();
         let res = test::call_service(&mut app, req).await;
-        let status_code = res.status().clone();
+        let status_code = res.status();
 
         let body = test::read_body(res).await;
         let response = serde_json::from_slice(&body).unwrap_or_default();
@@ -175,14 +141,14 @@ impl Server {
         eprintln!("post_request: {}", url);
 
         let mut app =
-            test::init_service(meilisearch_http::create_app(&self.data).wrap(NormalizePath)).await;
+            test::init_service(meilisearch_http::create_app(&self.data, true).wrap(NormalizePath)).await;
 
         let req = test::TestRequest::post()
             .uri(url)
             .set_json(&body)
             .to_request();
         let res = test::call_service(&mut app, req).await;
-        let status_code = res.status().clone();
+        let status_code = res.status();
 
         let body = test::read_body(res).await;
         let response = serde_json::from_slice(&body).unwrap_or_default();
@@ -204,14 +170,14 @@ impl Server {
         eprintln!("put_request: {}", url);
 
         let mut app =
-            test::init_service(meilisearch_http::create_app(&self.data).wrap(NormalizePath)).await;
+            test::init_service(meilisearch_http::create_app(&self.data, true).wrap(NormalizePath)).await;
 
         let req = test::TestRequest::put()
             .uri(url)
             .set_json(&body)
             .to_request();
         let res = test::call_service(&mut app, req).await;
-        let status_code = res.status().clone();
+        let status_code = res.status();
 
         let body = test::read_body(res).await;
         let response = serde_json::from_slice(&body).unwrap_or_default();
@@ -233,11 +199,11 @@ impl Server {
         eprintln!("delete_request: {}", url);
 
         let mut app =
-            test::init_service(meilisearch_http::create_app(&self.data).wrap(NormalizePath)).await;
+            test::init_service(meilisearch_http::create_app(&self.data, true).wrap(NormalizePath)).await;
 
         let req = test::TestRequest::delete().uri(url).to_request();
         let res = test::call_service(&mut app, req).await;
-        let status_code = res.status().clone();
+        let status_code = res.status();
 
         let body = test::read_body(res).await;
         let response = serde_json::from_slice(&body).unwrap_or_default();

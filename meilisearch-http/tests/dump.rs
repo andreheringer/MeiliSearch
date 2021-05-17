@@ -16,7 +16,7 @@ async fn trigger_and_wait_dump(server: &mut common::Server) -> String {
 
     let dump_uid = value["uid"].as_str().unwrap().to_string();
 
-    for _ in 0..20 as u8 {
+    for _ in 0..20_u8 {
         let (value, status_code) = server.get_dump_status(&dump_uid).await;
     
         assert_eq!(status_code, 200);
@@ -42,14 +42,12 @@ fn current_dump_version() -> String {
 }
 
 fn read_all_jsonline<R: std::io::Read>(r: R) -> Value {
-    let deserializer = serde_json::Deserializer::from_reader(r);
-    let iterator = deserializer.into_iter::<serde_json::Value>();
+    let deserializer = serde_json::Deserializer::from_reader(r); let iterator = deserializer.into_iter::<serde_json::Value>();
 
     json!(iterator.map(|v| v.unwrap()).collect::<Vec<Value>>())
 }
 
 #[actix_rt::test]
-#[ignore]
 async fn trigger_dump_should_return_ok() {
     let server = common::Server::test_server().await;
 
@@ -59,7 +57,6 @@ async fn trigger_dump_should_return_ok() {
 }
 
 #[actix_rt::test]
-#[ignore]
 async fn trigger_dump_twice_should_return_conflict() {
     let server = common::Server::test_server().await;
 
@@ -77,12 +74,11 @@ async fn trigger_dump_twice_should_return_conflict() {
     let (value, status_code) = server.trigger_dump().await;
 
     
-    assert_json_eq!(expected.clone(), value.clone(), ordered: false);
+    assert_json_eq!(expected, value, ordered: false);
     assert_eq!(status_code, 409);
 }
 
 #[actix_rt::test]
-#[ignore]
 async fn trigger_dump_concurently_should_return_conflict() {
     let server = common::Server::test_server().await;
 
@@ -95,12 +91,11 @@ async fn trigger_dump_concurently_should_return_conflict() {
 
     let ((_value_1, _status_code_1), (value_2, status_code_2)) = futures::join!(server.trigger_dump(), server.trigger_dump());
     
-    assert_json_eq!(expected.clone(), value_2.clone(), ordered: false);
+    assert_json_eq!(expected, value_2, ordered: false);
     assert_eq!(status_code_2, 409);
 }
 
 #[actix_rt::test]
-#[ignore]
 async fn get_dump_status_early_should_return_in_progress() {
     let mut server = common::Server::test_server().await;
     
@@ -121,11 +116,10 @@ async fn get_dump_status_early_should_return_in_progress() {
 
     assert_eq!(status_code, 200);
 
-    assert_json_eq!(expected.clone(), value.clone(), ordered: false);
+    assert_json_eq!(expected, value, ordered: false);
 }
 
 #[actix_rt::test]
-#[ignore]
 async fn get_dump_status_should_return_done() {
     let mut server = common::Server::test_server().await;
 
@@ -147,11 +141,10 @@ async fn get_dump_status_should_return_done() {
 
     assert_eq!(status_code, 200);
 
-    assert_json_eq!(expected.clone(), value.clone(), ordered: false);
+    assert_json_eq!(expected, value, ordered: false);
 }
 
 #[actix_rt::test]
-#[ignore]
 async fn get_dump_status_should_return_error_provoking_it() {
     let mut server = common::Server::test_server().await;
 
@@ -180,11 +173,10 @@ async fn get_dump_status_should_return_error_provoking_it() {
 
     assert_eq!(status_code, 200);
 
-    assert_json_eq!(expected.clone(), value.clone(), ordered: false);
+    assert_json_eq!(expected, value, ordered: false);
 }
 
 #[actix_rt::test]
-#[ignore]
 async fn dump_metadata_should_be_valid() {
     let mut server = common::Server::test_server().await;
     
@@ -228,11 +220,10 @@ async fn dump_metadata_should_be_valid() {
         "dumpVersion": current_dump_version()
     });
 
-    assert_json_include!(expected: expected.clone(), actual: metadata.clone());
+    assert_json_include!(expected: expected, actual: metadata);
 }
 
 #[actix_rt::test]
-#[ignore]
 async fn dump_gzip_should_have_been_created() {
     let mut server = common::Server::test_server().await;
     
@@ -245,7 +236,6 @@ async fn dump_gzip_should_have_been_created() {
 }
 
 #[actix_rt::test]
-#[ignore]
 async fn dump_index_settings_should_be_valid() {
     let mut server = common::Server::test_server().await;
 
@@ -321,11 +311,10 @@ async fn dump_index_settings_should_be_valid() {
     let file = File::open(tmp_dir_path.join("test").join("settings.json")).unwrap();
     let settings: serde_json::Value = serde_json::from_reader(file).unwrap();
 
-    assert_json_eq!(expected.clone(), settings.clone(), ordered: false);
+    assert_json_eq!(expected, settings, ordered: false);
 }
 
 #[actix_rt::test]
-#[ignore]
 async fn dump_index_documents_should_be_valid() {
     let mut server = common::Server::test_server().await;
 
@@ -345,11 +334,10 @@ async fn dump_index_documents_should_be_valid() {
     let file = File::open(tmp_dir_path.join("test").join("documents.jsonl")).unwrap();
     let documents = read_all_jsonline(file);
 
-    assert_json_eq!(expected.clone(), documents.clone(), ordered: false);
+    assert_json_eq!(expected, documents, ordered: false);
 }
 
 #[actix_rt::test]
-#[ignore]
 async fn dump_index_updates_should_be_valid() {
     let mut server = common::Server::test_server().await;
 
@@ -367,25 +355,14 @@ async fn dump_index_updates_should_be_valid() {
     compression::from_tar_gz(&dumps_dir.join(&format!("{}.dump", uid)), tmp_dir_path).unwrap();
 
     let file = File::open(tmp_dir_path.join("test").join("updates.jsonl")).unwrap();
-    let mut updates = read_all_jsonline(file);
+    let updates = read_all_jsonline(file);
 
-
-    // hotfix until #943 is fixed (https://github.com/meilisearch/MeiliSearch/issues/943)
-    updates.as_array_mut().unwrap()
-            .get_mut(0).unwrap()
-            .get_mut("type").unwrap()
-            .get_mut("settings").unwrap()
-            .get_mut("displayed_attributes").unwrap()
-            .get_mut("Update").unwrap()
-            .as_array_mut().unwrap().sort_by(|a, b| a.as_str().cmp(&b.as_str()));
-
-    eprintln!("{}\n", updates.to_string());
-    eprintln!("{}", expected.to_string());
-    assert_json_include!(expected: expected.clone(), actual: updates.clone());
+    eprintln!("{}\n", updates);
+    eprintln!("{}", expected);
+    assert_json_include!(expected: expected, actual: updates);
 }
  
 #[actix_rt::test]
-#[ignore]
 async fn get_unexisting_dump_status_should_return_not_found() {
     let mut server = common::Server::test_server().await;
 

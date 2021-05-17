@@ -6,8 +6,7 @@ use log::error;
 use std::fs::create_dir_all;
 use std::path::Path;
 use std::thread;
-use std::time::{Duration};
-use tempfile::TempDir;
+use std::time::Duration;
 
 pub fn load_snapshot(
     db_path: &str,
@@ -28,24 +27,35 @@ pub fn load_snapshot(
     }
 }
 
-pub fn create_snapshot(data: &Data, snapshot_path: &Path) -> Result<(), Error> {
-    let tmp_dir = TempDir::new()?;
+pub fn create_snapshot(data: &Data, snapshot_dir: impl AsRef<Path>, snapshot_name: impl AsRef<str>) -> Result<(), Error> {
+    create_dir_all(&snapshot_dir)?;
+    let tmp_dir = tempfile::tempdir_in(&snapshot_dir)?;
 
     data.db.copy_and_compact_to_path(tmp_dir.path())?;
 
-    compression::to_tar_gz(tmp_dir.path(), snapshot_path).map_err(|e| Error::Internal(format!("something went wrong during snapshot compression: {}", e)))
+    let temp_snapshot_file = tempfile::NamedTempFile::new_in(&snapshot_dir)?;
+
+    compression::to_tar_gz(tmp_dir.path(), temp_snapshot_file.path())
+        .map_err(|e| Error::Internal(format!("something went wrong during snapshot compression: {}", e)))?;
+
+    let snapshot_path = snapshot_dir.as_ref().join(snapshot_name.as_ref());
+
+    temp_snapshot_file.persist(snapshot_path).map_err(|e| Error::Internal(e.to_string()))?;
+
+    Ok(())
 }
 
 pub fn schedule_snapshot(data: Data, snapshot_dir: &Path, time_gap_s: u64) -> Result<(), Error> {
-    if snapshot_dir.file_name().is_none() { 
+    if snapshot_dir.file_name().is_none() {
         return Err(Error::Internal("invalid snapshot file path".to_string()));
     }
     let db_name = Path::new(&data.db_path).file_name().ok_or_else(|| Error::Internal("invalid database name".to_string()))?;
     create_dir_all(snapshot_dir)?;
-    let snapshot_path = snapshot_dir.join(format!("{}.snapshot", db_name.to_str().unwrap_or("data.ms")));
-    
-    thread::spawn(move || loop { 
-        if let Err(e) = create_snapshot(&data, &snapshot_path) {
+    let snapshot_name = format!("{}.snapshot", db_name.to_str().unwrap_or("data.ms"));
+    let snapshot_dir = snapshot_dir.to_owned();
+
+    thread::spawn(move || loop {
+        if let Err(e) = create_snapshot(&data, &snapshot_dir, &snapshot_name) {
             error!("Unsuccessful snapshot creation: {}", e);
         }
         thread::sleep(Duration::from_secs(time_gap_s));
@@ -62,7 +72,7 @@ mod tests {
 
     #[test]
     fn test_pack_unpack() {
-        let tempdir = TempDir::new().unwrap();
+        let tempdir = tempfile::tempdir().unwrap();
 
         let test_dir = tempdir.path();
         let src_dir = test_dir.join("src");
@@ -72,12 +82,12 @@ mod tests {
         let file_1_relative = Path::new("file1.txt");
         let subdir_relative = Path::new("subdir/");
         let file_2_relative = Path::new("subdir/file2.txt");
-        
+
         create_dir_all(src_dir.join(subdir_relative)).unwrap();
         fs::File::create(src_dir.join(file_1_relative)).unwrap().write_all(b"Hello_file_1").unwrap();
         fs::File::create(src_dir.join(file_2_relative)).unwrap().write_all(b"Hello_file_2").unwrap();
 
-        
+
         assert!(compression::to_tar_gz(&src_dir, &archive_path).is_ok());
         assert!(archive_path.exists());
         assert!(load_snapshot(&dest_dir.to_str().unwrap(), &archive_path, false, false).is_ok());
@@ -89,7 +99,7 @@ mod tests {
 
         let contents = fs::read_to_string(dest_dir.join(file_1_relative)).unwrap();
         assert_eq!(contents, "Hello_file_1");
-    
+
         let contents = fs::read_to_string(dest_dir.join(file_2_relative)).unwrap();
         assert_eq!(contents, "Hello_file_2");
     }

@@ -1,9 +1,46 @@
-## v0.16.0
+## v0.20.0 - 2021-03-22
+
+  - Fix build on mac M1 (#1280)
+  - Server root returns 200 in production (#1292)
+  - Healthcheck returns 200 (#1291)
+  - Snapshot temporary files are not created in /tmp anymore (#1238)
+
+## v0.19.0 - 2021-02-09
+
+  - The snapshots are now created and then renamed in atomically (#1172)
+  - Fix a race condition when an update and a document addition are processed immediately one after the other (#1176)
+  - Latin synonyms are normalized during indexation (#1174)
+
+## v0.18.1 - 2021-01-14
+
+  - Fix unexpected CORS error (#1185)
+
+## v0.18.0 - 2021-01-11
+
+  - Integration with the new tokenizer (#1091)
+  - Fix setting consistency bug (#1128)
+  - Fix attributes to retrieve bug (#1131)
+  - Increase default payload size (#1147)
+  - Improvements to code quality (#1167, #1165, #1126, #1151)
+
+## v0.17.0 - 2020-11-30
+  - Fix corrupted data during placeholder search (#1089)
+  - Remove maintenance error from http (#1082)
+  - Disable frontend in production (#1097)
+  - Update nbHits count with filtered documents (#849)
+  - Remove update changelog ci check (#1090)
+  - Add deploy on Platform.sh option to README (#1087)
+  - Change movie gifs in README (#1077)
+  - Remove some clippy warnings (#1100)
+  - Improve script `download-latest.sh` (#1054)
+  - Bump dependencies version (#1056, #1057, #1059)
+
+## v0.16.0 - 2020-11-02
 
   - Automatically create index on document push if index doesn't exist (#914)
   - Sort displayedAttributes and facetDistribution (#946)
 
-## v0.15.0
+## v0.15.0 - 2020-09-30
 
   - Update actix-web dependency to 3.0.0 (#963)
   - Consider an empty query to be a placeholder search (#916)
@@ -40,7 +77,7 @@
 
 ## v0.11.1
 
-  - Fix facet cache on document update (#789) 
+  - Fix facet cache on document update (#789)
   - Improvements on settings consistency (#778)
 
 ## v0.11.0

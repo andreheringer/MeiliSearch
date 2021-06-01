@@ -16,7 +16,7 @@ crossbeam-channel = "0.5.0"
 deunicode = "1.1.1"
 either = "1.6.1"
 env_logger = "0.8.2"
-fst = "0.4.5"
+fst = "0.4.6"
 hashbrown = { version = "0.9.1", features = ["serde"] }
 heed = "0.10.6"
 indexmap = { version = "1.6.1", features = ["serde-1"] }
